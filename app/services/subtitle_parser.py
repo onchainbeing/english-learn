@@ -248,7 +248,13 @@ def _parse_raw_cues(content: str) -> list[Cue]:
     return cues
 
 
-def parse_subtitle_file(path: Path) -> list[Cue]:
+def parse_subtitle_file_basic(path: Path) -> list[Cue]:
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    raw_cues = _parse_raw_cues(content)
+    return finalize_practice_cues(raw_cues)
+
+
+def parse_subtitle_file_incremental(path: Path) -> list[Cue]:
     content = path.read_text(encoding="utf-8", errors="ignore")
     raw_cues = _parse_raw_cues(content)
 
@@ -319,3 +325,8 @@ def parse_subtitle_file(path: Path) -> list[Cue]:
 
     # Fallback for subtitle formats that do not punctuate well.
     return finalize_practice_cues(raw_cues)
+
+
+def parse_subtitle_file(path: Path) -> list[Cue]:
+    # Backward-compatible default parser.
+    return parse_subtitle_file_incremental(path)

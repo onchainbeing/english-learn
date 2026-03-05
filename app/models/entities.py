@@ -36,6 +36,9 @@ class ImportJob(SQLModel, table=True):
     url: str
     preferred_lang: str = "en"
     status: str = Field(default="pending", index=True)
+    stage: str = Field(default="queued", index=True)
+    progress_pct: int = 0
+    stage_message: str | None = None
     episode_id: int | None = Field(default=None, index=True)
     error_message: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

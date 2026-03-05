@@ -17,7 +17,13 @@ from app.schemas.requests import (
     StartSessionRequest,
     VocabReviewRequest,
 )
-from app.schemas.responses import AttemptResponse, ImportJobResponse, NextSentenceResponse, SentenceResponse
+from app.schemas.responses import (
+    AttemptResponse,
+    ImportJobResponse,
+    NextSentenceResponse,
+    SentencePromptResponse,
+    SentenceResponse,
+)
 from app.services.audio_utils import get_audio_duration_seconds
 from app.services.feedback import FeedbackService
 from app.services.practice import next_sentence_index
@@ -34,29 +40,80 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _run_import_job(job_id: int, url: str, preferred_lang: str, transcript_mode: str) -> None:
+def _set_import_job_progress(
+    job_id: int,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    progress_pct: int | None = None,
+    stage_message: str | None = None,
+    episode_id: int | None = None,
+    error_message: str | None = None,
+) -> None:
     with Session(engine) as db:
         job = db.get(ImportJob, job_id)
         if not job:
             return
+        if status is not None:
+            job.status = status
+        if stage is not None:
+            job.stage = stage
+        if progress_pct is not None:
+            job.progress_pct = max(0, min(100, progress_pct))
+        if stage_message is not None:
+            job.stage_message = stage_message
+        if episode_id is not None:
+            job.episode_id = episode_id
+        if error_message is not None:
+            job.error_message = error_message
+        job.updated_at = _utc_now()
+        db.add(job)
+        db.commit()
 
+
+def _run_import_job(job_id: int, url: str, preferred_lang: str, transcript_mode: str) -> None:
+    _set_import_job_progress(
+        job_id,
+        status="running",
+        stage="starting",
+        progress_pct=1,
+        stage_message="Import started.",
+        error_message=None,
+    )
+
+    with Session(engine) as db:
         try:
             result = import_youtube_episode(
                 db,
                 url=url,
                 preferred_lang=preferred_lang,
                 transcript_mode=transcript_mode,
+                progress_callback=lambda stage, message, pct: _set_import_job_progress(
+                    job_id,
+                    status="running",
+                    stage=stage,
+                    progress_pct=pct,
+                    stage_message=message,
+                ),
             )
-            job.status = "completed"
-            job.episode_id = result.episode.id
-            job.error_message = None
+            _set_import_job_progress(
+                job_id,
+                status="completed",
+                stage="ready",
+                progress_pct=100,
+                stage_message="Import completed. You can start shadowing now.",
+                episode_id=result.episode.id,
+                error_message=None,
+            )
         except Exception as exc:
-            job.status = "failed"
-            job.error_message = str(exc)
-        finally:
-            job.updated_at = _utc_now()
-            db.add(job)
-            db.commit()
+            _set_import_job_progress(
+                job_id,
+                status="failed",
+                stage="failed",
+                progress_pct=100,
+                stage_message="Import failed.",
+                error_message=str(exc),
+            )
 
 
 @router.post("/youtube/import", response_model=ImportJobResponse)
@@ -65,7 +122,14 @@ def import_youtube(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
 ):
-    job = ImportJob(url=payload.url, preferred_lang=payload.preferred_lang, status="pending")
+    job = ImportJob(
+        url=payload.url,
+        preferred_lang=payload.preferred_lang,
+        status="pending",
+        stage="queued",
+        progress_pct=0,
+        stage_message="Queued. Waiting to start import...",
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -77,7 +141,15 @@ def import_youtube(
         payload.preferred_lang,
         payload.transcript_mode,
     )
-    return ImportJobResponse(id=job.id, status=job.status, episode_id=job.episode_id)
+    return ImportJobResponse(
+        id=job.id,
+        status=job.status,
+        stage=job.stage,
+        progress_pct=job.progress_pct,
+        stage_message=job.stage_message,
+        ready_to_shadow=False,
+        episode_id=job.episode_id,
+    )
 
 
 @router.get("/import-jobs/{job_id}", response_model=ImportJobResponse)
@@ -89,6 +161,10 @@ def get_import_job(job_id: int, db: Session = Depends(get_session)):
     return ImportJobResponse(
         id=job.id,
         status=job.status,
+        stage=job.stage,
+        progress_pct=job.progress_pct,
+        stage_message=job.stage_message,
+        ready_to_shadow=(job.status == "completed" and job.episode_id is not None),
         episode_id=job.episode_id,
         error_message=job.error_message,
     )
@@ -113,6 +189,23 @@ def get_sentence(episode_id: int, idx: int, db: Session = Depends(get_session)):
         episode_id=sentence.episode_id,
         idx=sentence.idx,
         text=sentence.text,
+        start_ms=sentence.start_ms,
+        end_ms=sentence.end_ms,
+    )
+
+
+@router.get("/episodes/{episode_id}/sentences/{idx}/prompt", response_model=SentencePromptResponse)
+def get_sentence_prompt(episode_id: int, idx: int, db: Session = Depends(get_session)):
+    sentence = db.exec(
+        select(Sentence).where(Sentence.episode_id == episode_id, Sentence.idx == idx)
+    ).first()
+    if not sentence:
+        raise HTTPException(status_code=404, detail="Sentence not found")
+
+    return SentencePromptResponse(
+        id=sentence.id,
+        episode_id=sentence.episode_id,
+        idx=sentence.idx,
         start_ms=sentence.start_ms,
         end_ms=sentence.end_ms,
     )
@@ -221,6 +314,7 @@ async def create_attempt(
 
         return AttemptResponse(
             attempt_id=attempt.id,
+            reference_text=attempt.reference_text,
             user_text=attempt.user_text,
             missed_words=score.missed_words,
             extra_words=score.extra_words,

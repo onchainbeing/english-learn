@@ -19,7 +19,7 @@
       <section class="card">
         <h3>Sentence <span id="idx">0</span></h3>
         <p id="state-text">Preparing session...</p>
-        <p id="sentence-text">Loading...</p>
+        <p id="sentence-text">Transcript hidden while speaking.</p>
         <div class="row">
           <button id="play-btn">Play Sentence</button>
           <button id="record-btn" disabled>Start Recording</button>
@@ -31,7 +31,54 @@
 
       <section class="card">
         <h3>Feedback</h3>
-        <pre id="feedback">No attempt yet.</pre>
+        <div class="row">
+          <button id="play-attempt-btn" disabled>Play My Recording</button>
+        </div>
+        <p id="feedback-status">No attempt yet.</p>
+        <div id="feedback-details" class="feedback-details" hidden>
+          <p><strong>Target transcript:</strong> <span id="fb-target">-</span></p>
+          <p><strong>Your transcript:</strong> <span id="fb-user">-</span></p>
+
+          <div class="score-lines">
+            <div class="score-line">
+              <span class="score-name">
+                Word score
+                <span
+                  class="hint-icon"
+                  title="How accurately your spoken words match the target transcript. Closer to 1.000 is better."
+                  >?</span
+                >
+              </span>
+              <span id="fb-score-word" class="score-value">-</span>
+            </div>
+            <div class="score-line">
+              <span class="score-name">
+                Timing score
+                <span
+                  class="hint-icon"
+                  title="How close your speaking duration is to the original sentence timing. Closer to 1.000 is better."
+                  >?</span
+                >
+              </span>
+              <span id="fb-score-timing" class="score-value">-</span>
+            </div>
+            <div class="score-line">
+              <span class="score-name">
+                Total score
+                <span
+                  class="hint-icon"
+                  title="Combined overall score from word accuracy and timing rhythm. Higher means a better shadowing attempt."
+                  >?</span
+                >
+              </span>
+              <span id="fb-score-total" class="score-value">-</span>
+            </div>
+          </div>
+
+          <p><strong>Missed words:</strong> <span id="fb-missed">-</span></p>
+          <p><strong>Extra words:</strong> <span id="fb-extra">-</span></p>
+          <p><strong>Tip:</strong> <span id="fb-tip">-</span></p>
+        </div>
       </section>
     </main>
 
@@ -46,19 +93,98 @@
       let mediaRecorder = null;
       let chunks = [];
       let recordedBlob = null;
+      let latestAttemptBlob = null;
       let mode = 'loading';
       let isAutoPausing = false;
+      let latestAttemptAudioUrl = null;
 
       const idxEl = document.getElementById('idx');
       const stateEl = document.getElementById('state-text');
       const textEl = document.getElementById('sentence-text');
-      const feedbackEl = document.getElementById('feedback');
+      const feedbackStatusEl = document.getElementById('feedback-status');
+      const feedbackDetailsEl = document.getElementById('feedback-details');
+      const fbTargetEl = document.getElementById('fb-target');
+      const fbUserEl = document.getElementById('fb-user');
+      const fbScoreWordEl = document.getElementById('fb-score-word');
+      const fbScoreTimingEl = document.getElementById('fb-score-timing');
+      const fbScoreTotalEl = document.getElementById('fb-score-total');
+      const fbMissedEl = document.getElementById('fb-missed');
+      const fbExtraEl = document.getElementById('fb-extra');
+      const fbTipEl = document.getElementById('fb-tip');
       const player = document.getElementById('player');
       const playBtn = document.getElementById('play-btn');
       const recordBtn = document.getElementById('record-btn');
       const stopBtn = document.getElementById('stop-btn');
       const submitBtn = document.getElementById('submit-btn');
       const skipBtn = document.getElementById('skip-btn');
+      const playAttemptBtn = document.getElementById('play-attempt-btn');
+
+      function hideSentenceText() {
+        textEl.textContent = 'Transcript hidden while speaking. Listen and repeat first.';
+      }
+
+      function updateAttemptAudio(blob) {
+        latestAttemptBlob = blob;
+        playAttemptBtn.disabled = !latestAttemptBlob;
+      }
+
+      function clearAttemptAudio() {
+        latestAttemptBlob = null;
+        playAttemptBtn.disabled = true;
+        if (latestAttemptAudioUrl) {
+          URL.revokeObjectURL(latestAttemptAudioUrl);
+          latestAttemptAudioUrl = null;
+        }
+      }
+
+      function resetFeedbackView(message = 'No attempt yet for this sentence.') {
+        feedbackStatusEl.textContent = message;
+        feedbackDetailsEl.hidden = true;
+        fbTargetEl.textContent = '-';
+        fbUserEl.textContent = '-';
+        fbScoreWordEl.textContent = '-';
+        fbScoreTimingEl.textContent = '-';
+        fbScoreTotalEl.textContent = '-';
+        fbMissedEl.textContent = '-';
+        fbExtraEl.textContent = '-';
+        fbTipEl.textContent = '-';
+      }
+
+      function formatScore(value) {
+        return Number(value || 0).toFixed(3);
+      }
+
+      function formatWords(words) {
+        return words?.length ? words.join(', ') : 'None';
+      }
+
+      function showFeedbackError(message) {
+        feedbackStatusEl.textContent = message;
+        feedbackDetailsEl.hidden = true;
+      }
+
+      function renderFeedback(data) {
+        feedbackStatusEl.textContent = 'Attempt evaluated.';
+        feedbackDetailsEl.hidden = false;
+        fbTargetEl.textContent = data.reference_text || '(unavailable)';
+        fbUserEl.textContent = data.user_text || '(empty)';
+        fbScoreWordEl.textContent = formatScore(data.score_word);
+        fbScoreTimingEl.textContent = formatScore(data.score_timing);
+        fbScoreTotalEl.textContent = formatScore(data.score_total);
+        fbMissedEl.textContent = formatWords(data.missed_words);
+        fbExtraEl.textContent = formatWords(data.extra_words);
+        fbTipEl.textContent = data.tip || 'No tip.';
+      }
+
+      function playLatestAttempt() {
+        if (!latestAttemptBlob) return;
+        if (latestAttemptAudioUrl) URL.revokeObjectURL(latestAttemptAudioUrl);
+        latestAttemptAudioUrl = URL.createObjectURL(latestAttemptBlob);
+        const audio = new Audio(latestAttemptAudioUrl);
+        audio.play().catch((err) => {
+          showFeedbackError(`Playback error: ${String(err)}`);
+        });
+      }
 
       function setMode(nextMode) {
         mode = nextMode;
@@ -81,6 +207,12 @@
         if (mode === 'recording') stateEl.textContent = 'Recording... click Stop when finished.';
         if (mode === 'submitting') stateEl.textContent = 'Evaluating your speech...';
         if (mode === 'completed') stateEl.textContent = 'Session completed.';
+
+        if (mode === 'completed') {
+          textEl.textContent = 'Practice session completed.';
+        } else {
+          hideSentenceText();
+        }
       }
 
       async function startSession() {
@@ -95,7 +227,7 @@
       }
 
       async function loadSentence(idx) {
-        const res = await fetch(`/api/episodes/${episodeId}/sentences/${idx}`);
+        const res = await fetch(`/api/episodes/${episodeId}/sentences/${idx}/prompt`);
         if (!res.ok) {
           textEl.textContent = 'Session completed or sentence not found.';
           setMode('completed');
@@ -108,7 +240,7 @@
         currentEndMs = data.end_ms;
         recordedBlob = null;
         idxEl.textContent = String(currentIdx);
-        textEl.textContent = data.text;
+        clearAttemptAudio();
         setMode('ready_to_listen');
         return true;
       }
@@ -130,7 +262,7 @@
           setMode('listening');
           await player.play();
         } catch (err) {
-          feedbackEl.textContent = `Playback error: ${String(err)}`;
+          showFeedbackError(`Playback error: ${String(err)}`);
           setMode('ready_to_listen');
         }
       }
@@ -191,7 +323,9 @@
       submitBtn.addEventListener('click', async () => {
         if (!recordedBlob) return;
         setMode('submitting');
-        feedbackEl.textContent = 'Transcribing and scoring...';
+        feedbackStatusEl.textContent = 'Transcribing and scoring...';
+        feedbackDetailsEl.hidden = true;
+        const attemptBlobForFeedback = recordedBlob;
 
         const form = new FormData();
         form.append('sentence_id', String(currentSentenceId));
@@ -202,13 +336,14 @@
         const data = await res.json();
 
         if (!res.ok) {
-          feedbackEl.textContent = JSON.stringify(data, null, 2);
+          showFeedbackError(data.detail || JSON.stringify(data, null, 2));
           setMode('shadow_ready');
           return;
         }
 
         lastScore = data.score_total;
-        feedbackEl.textContent = JSON.stringify(data, null, 2);
+        updateAttemptAudio(attemptBlobForFeedback);
+        renderFeedback(data);
         recordedBlob = null;
         await goNextByScore(lastScore);
       });
@@ -221,7 +356,7 @@
         });
         const data = await res.json();
         if (!res.ok) {
-          feedbackEl.textContent = JSON.stringify(data, null, 2);
+          showFeedbackError(data.detail || JSON.stringify(data, null, 2));
           setMode('shadow_ready');
           return;
         }
@@ -238,12 +373,18 @@
 
       skipBtn.addEventListener('click', async () => {
         if (mode === 'completed' || mode === 'submitting') return;
-        feedbackEl.textContent = 'Skipped. Moving to next sentence...';
+        feedbackStatusEl.textContent = 'Skipped. Moving to next sentence...';
+        feedbackDetailsEl.hidden = true;
         await goNextByScore(0.85);
+      });
+
+      playAttemptBtn.addEventListener('click', () => {
+        playLatestAttempt();
       });
 
       (async () => {
         setMode('loading');
+        resetFeedbackView('Preparing session...');
         await startSession();
         const loaded = await loadSentence(currentIdx);
         if (loaded) {

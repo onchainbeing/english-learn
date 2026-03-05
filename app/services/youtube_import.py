@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,10 +10,11 @@ import yt_dlp
 
 from app.core.config import get_settings
 from app.models import Episode, Sentence
-from app.services.subtitle_parser import Cue, parse_subtitle_file
+from app.services.subtitle_parser import Cue, parse_subtitle_file_basic, parse_subtitle_file_incremental
 from app.services.strict_transcript import transcribe_audio_to_sentence_cues
 
 TRANSCRIPT_MODE_YOUTUBE_DEFAULT = "youtube_default"
+TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL = "youtube_incremental"
 TRANSCRIPT_MODE_STRICT_WHISPER = "strict_whisper"
 
 
@@ -24,13 +26,16 @@ class ImportResult:
 
 def normalize_transcript_mode(mode: str | None, default_mode: str) -> str:
     raw = (mode or default_mode).strip().lower()
-    if raw in {"youtube", "subtitle", "subtitles", TRANSCRIPT_MODE_YOUTUBE_DEFAULT}:
+    if raw in {"youtube", "subtitle", "subtitles", "youtube_basic", "basic", TRANSCRIPT_MODE_YOUTUBE_DEFAULT}:
         return TRANSCRIPT_MODE_YOUTUBE_DEFAULT
+    if raw in {"youtube_incremental", "rolling", "incremental", TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL}:
+        return TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL
     if raw in {"strict", "whisper", TRANSCRIPT_MODE_STRICT_WHISPER}:
         return TRANSCRIPT_MODE_STRICT_WHISPER
     raise RuntimeError(
         f"Unsupported transcript_mode='{mode}'. "
-        f"Use '{TRANSCRIPT_MODE_YOUTUBE_DEFAULT}' or '{TRANSCRIPT_MODE_STRICT_WHISPER}'."
+        f"Use '{TRANSCRIPT_MODE_YOUTUBE_DEFAULT}', '{TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL}', "
+        f"or '{TRANSCRIPT_MODE_STRICT_WHISPER}'."
     )
 
 
@@ -88,12 +93,20 @@ def _resolve_sentence_cues(
             raise RuntimeError("Strict transcript mode produced no sentence cues.")
         return cues
 
+    if transcript_mode == TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL:
+        if not subtitle_file:
+            raise RuntimeError("No subtitles found (manual or auto) for youtube_incremental transcript mode.")
+        cues = parse_subtitle_file_incremental(subtitle_file)
+        if not cues:
+            raise RuntimeError("Incremental subtitle parsing returned no valid cues")
+        return cues
+
     if transcript_mode == TRANSCRIPT_MODE_YOUTUBE_DEFAULT:
         if not subtitle_file:
             raise RuntimeError("No subtitles found (manual or auto) for youtube_default transcript mode.")
-        cues = parse_subtitle_file(subtitle_file)
+        cues = parse_subtitle_file_basic(subtitle_file)
         if not cues:
-            raise RuntimeError("Subtitle parsing returned no valid cues")
+            raise RuntimeError("Basic subtitle parsing returned no valid cues")
         return cues
 
     raise RuntimeError(f"Unsupported transcript mode: {transcript_mode}")
@@ -104,9 +117,16 @@ def import_youtube_episode(
     url: str,
     preferred_lang: str = "en",
     transcript_mode: str | None = None,
+    progress_callback: Callable[[str, str, int], None] | None = None,
 ) -> ImportResult:
     settings = get_settings()
     resolved_mode = normalize_transcript_mode(transcript_mode, settings.default_transcript_mode)
+
+    def emit(stage: str, message: str, progress_pct: int) -> None:
+        if progress_callback:
+            progress_callback(stage, message, progress_pct)
+
+    emit("downloading", "Downloading audio and subtitles from YouTube...", 5)
 
     ydl_opts = {
         "format": "bestaudio/best",
@@ -124,6 +144,8 @@ def import_youtube_episode(
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
+    emit("processing_media", "Processing imported audio files...", 35)
+
     video_id = info.get("id")
     title = info.get("title", video_id)
     if not video_id:
@@ -139,12 +161,21 @@ def import_youtube_episode(
         raise RuntimeError("Audio file not found after yt-dlp import")
     subtitle_file = _resolve_subtitle_file(video_id)
 
+    if resolved_mode == TRANSCRIPT_MODE_STRICT_WHISPER:
+        emit("transcribing", "Transcribing full audio with local Whisper...", 55)
+    elif resolved_mode == TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL:
+        emit("segmenting", "Building sentence cues with incremental subtitle parser...", 60)
+    else:
+        emit("segmenting", "Building sentence cues with basic subtitle parser...", 60)
+
     cues = _resolve_sentence_cues(
         transcript_mode=resolved_mode,
         preferred_lang=preferred_lang,
         audio_file=audio_file,
         subtitle_file=subtitle_file,
     )
+
+    emit("saving", "Saving episode and sentence cues...", 88)
 
     episode = Episode(
         youtube_video_id=video_id,
@@ -161,5 +192,6 @@ def import_youtube_episode(
     db.add(episode)
     db.commit()
     db.refresh(episode)
+    emit("ready", "Import completed. You can start shadowing now.", 100)
 
     return ImportResult(episode=episode, sentence_count=sentence_count)

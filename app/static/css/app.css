@@ -64,3 +64,54 @@ pre {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+#feedback-status {
+  margin: 12px 0;
+}
+
+.feedback-details p {
+  margin: 10px 0;
+}
+
+.score-lines {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.score-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbf5;
+}
+
+.score-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.hint-icon {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+}
+
+.score-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}

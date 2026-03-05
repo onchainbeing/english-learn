@@ -15,11 +15,12 @@ from app.db.session import engine, init_db
 from app.models import Attempt, Episode, PracticeSession, Sentence, VocabItem, WordError
 from app.services.practice import next_sentence_index
 from app.services.strict_transcript import transcribe_audio_to_sentence_cues
-from app.services.subtitle_parser import parse_subtitle_file
+from app.services.subtitle_parser import parse_subtitle_file_basic, parse_subtitle_file_incremental
 from app.services.vocab import review_vocab_item
 from app.services.youtube_import import (
     TRANSCRIPT_MODE_STRICT_WHISPER,
     TRANSCRIPT_MODE_YOUTUBE_DEFAULT,
+    TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL,
     import_youtube_episode,
     normalize_transcript_mode,
 )
@@ -29,6 +30,11 @@ session_app = typer.Typer(help="Practice session commands")
 vocab_app = typer.Typer(help="Vocabulary commands")
 app.add_typer(session_app, name="session")
 app.add_typer(vocab_app, name="vocab")
+
+TRANSCRIPT_MODE_HELP = (
+    f"Transcript mode: {TRANSCRIPT_MODE_STRICT_WHISPER}, "
+    f"{TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL}, or {TRANSCRIPT_MODE_YOUTUBE_DEFAULT}"
+)
 
 
 def _doctor_check(
@@ -55,7 +61,7 @@ def import_youtube(
     lang: str = "en",
     transcript_mode: str = typer.Option(
         "strict_whisper",
-        help=f"Transcript mode: {TRANSCRIPT_MODE_STRICT_WHISPER} or {TRANSCRIPT_MODE_YOUTUBE_DEFAULT}",
+        help=TRANSCRIPT_MODE_HELP,
     ),
 ):
     init_db()
@@ -79,7 +85,7 @@ def rebuild_episode(
     episode_id: int,
     transcript_mode: str = typer.Option(
         "strict_whisper",
-        help=f"Transcript mode: {TRANSCRIPT_MODE_STRICT_WHISPER} or {TRANSCRIPT_MODE_YOUTUBE_DEFAULT}",
+        help=TRANSCRIPT_MODE_HELP,
     ),
 ):
     init_db()
@@ -105,7 +111,10 @@ def rebuild_episode(
             subtitle_path = Path(episode.subtitle_path)
             if not subtitle_path.exists():
                 raise typer.BadParameter(f"Subtitle file not found: {subtitle_path}")
-            cues = parse_subtitle_file(subtitle_path)
+            if resolved_mode == TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL:
+                cues = parse_subtitle_file_incremental(subtitle_path)
+            else:
+                cues = parse_subtitle_file_basic(subtitle_path)
             if not cues:
                 raise typer.BadParameter(f"No cues parsed from subtitle: {subtitle_path}")
             source_hint = str(subtitle_path)

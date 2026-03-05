@@ -37,7 +37,8 @@ Local AI English shadowing coach (CLI + Web UI) for YouTube podcasts.
 - Set `DISABLE_DOTENV=1` to ignore `.env` and use only process env vars.
 - Transcript modes:
   - `strict_whisper`: transcribe full audio with local Whisper (best alignment, slower import).
-  - `youtube_default`: parse YouTube subtitle stream (faster import, noisier segmentation).
+  - `youtube_incremental`: rolling-caption incremental parser with dedupe and sentence emission.
+  - `youtube_default`: basic subtitle cue parser (legacy baseline).
 - Optional cloud STT fallback:
   - `STT_PROVIDER=openai_whisper`
   - `OPENAI_API_KEY=...`

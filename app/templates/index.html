@@ -21,7 +21,8 @@
           <label>Transcript Mode</label>
           <select id="yt-mode">
             <option value="strict_whisper" selected>strict_whisper (Recommended)</option>
-            <option value="youtube_default">youtube_default</option>
+            <option value="youtube_incremental">youtube_incremental (rolling subtitle cleaner)</option>
+            <option value="youtube_default">youtube_default (basic subtitle split)</option>
           </select>
           <button type="submit">Import</button>
         </form>
@@ -48,18 +49,37 @@
       const form = document.getElementById('import-form');
       const statusEl = document.getElementById('import-status');
 
+      function renderStatus(message, readyEpisodeId = null) {
+        statusEl.textContent = message;
+        if (readyEpisodeId !== null) {
+          const spacer = document.createElement('span');
+          spacer.textContent = ' ';
+          const link = document.createElement('a');
+          link.href = `/practice/${readyEpisodeId}`;
+          link.textContent = 'Start shadowing now';
+          statusEl.appendChild(spacer);
+          statusEl.appendChild(link);
+        }
+      }
+
       async function pollJob(jobId) {
         for (let i = 0; i < 180; i++) {
           const res = await fetch(`/api/import-jobs/${jobId}`);
           const data = await res.json();
-          statusEl.textContent = `Job ${jobId}: ${data.status}`;
-          if (data.status === 'completed') {
-            statusEl.textContent = `Completed. Episode ID: ${data.episode_id}. Refreshing...`;
-            setTimeout(() => window.location.reload(), 1000);
+          const stage = data.stage || 'working';
+          const pct = Number.isFinite(data.progress_pct) ? data.progress_pct : 0;
+          const detail = data.stage_message ? ` - ${data.stage_message}` : '';
+          renderStatus(`Job ${jobId}: ${data.status} (${pct}%) [${stage}]${detail}`);
+          if (data.ready_to_shadow) {
+            renderStatus(
+              `Completed. Episode ID: ${data.episode_id}. You can start shadowing now.`,
+              data.episode_id
+            );
+            setTimeout(() => window.location.reload(), 1200);
             return;
           }
           if (data.status === 'failed') {
-            statusEl.textContent = `Failed: ${data.error_message}`;
+            renderStatus(`Failed: ${data.error_message}`);
             return;
           }
           await new Promise((r) => setTimeout(r, 1500));
@@ -68,7 +88,7 @@
 
       form.addEventListener('submit', async (ev) => {
         ev.preventDefault();
-        statusEl.textContent = 'Submitting import job...';
+        renderStatus('Submitting import job...');
         const payload = {
           url: document.getElementById('yt-url').value,
           preferred_lang: document.getElementById('yt-lang').value || 'en',
@@ -81,7 +101,7 @@
         });
         const data = await res.json();
         if (!res.ok) {
-          statusEl.textContent = data.detail || 'Import request failed';
+          renderStatus(data.detail || 'Import request failed');
           return;
         }
         pollJob(data.id);

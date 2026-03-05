@@ -8,6 +8,7 @@ from app.schemas.responses import (
     AttemptResponse,
     ImportJobResponse,
     NextSentenceResponse,
+    SentencePromptResponse,
     SentenceResponse,
 )
 
@@ -18,6 +19,7 @@ __all__ = [
     "VocabReviewRequest",
     "ImportJobResponse",
     "SentenceResponse",
+    "SentencePromptResponse",
     "AttemptResponse",
     "NextSentenceResponse",
 ]
