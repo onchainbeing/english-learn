@@ -4,6 +4,7 @@ import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from sqlmodel import Session, select
 import yt_dlp
@@ -39,17 +40,28 @@ def normalize_transcript_mode(mode: str | None, default_mode: str) -> str:
     )
 
 
-def _find_subtitle_file(video_id: str, search_dir: Path) -> Path | None:
-    candidates = sorted(search_dir.glob(f"{video_id}*.vtt")) + sorted(search_dir.glob(f"{video_id}*.srt"))
+def _mode_token(mode: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_-]+", "-", mode.strip().lower())
+    token = token.strip("-")
+    return token or "mode"
+
+
+def _find_subtitle_file(video_id: str, search_dir: Path, mode_token: str | None = None) -> Path | None:
+    patterns: list[str]
+    if mode_token:
+        patterns = [f"{video_id}.{mode_token}*.vtt", f"{video_id}.{mode_token}*.srt"]
+    else:
+        patterns = [f"{video_id}*.vtt", f"{video_id}*.srt"]
+
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(sorted(search_dir.glob(pattern)))
     return candidates[0] if candidates else None
 
 
-def _find_audio_file(video_id: str, search_dir: Path) -> Path | None:
-    candidates = [
-        p
-        for p in sorted(search_dir.glob(f"{video_id}.*"))
-        if p.suffix.lower() not in {".vtt", ".srt", ".json"}
-    ]
+def _find_audio_file(video_id: str, search_dir: Path, mode_token: str | None = None) -> Path | None:
+    pattern = f"{video_id}.{mode_token}.*" if mode_token else f"{video_id}.*"
+    candidates = [p for p in sorted(search_dir.glob(pattern)) if p.suffix.lower() not in {".vtt", ".srt", ".json"}]
     return candidates[0] if candidates else None
 
 
@@ -67,9 +79,14 @@ def _persist_sentences(db: Session, episode_id: int, cues: list[Cue]) -> int:
     return len(cues)
 
 
-def _resolve_subtitle_file(video_id: str) -> Path | None:
+def _resolve_subtitle_file(video_id: str, mode_token: str) -> Path | None:
     settings = get_settings()
-    subtitle_file = _find_subtitle_file(video_id, settings.media_dir)
+    subtitle_file = _find_subtitle_file(video_id, settings.media_dir, mode_token=mode_token)
+    if not subtitle_file:
+        subtitle_file = _find_subtitle_file(video_id, settings.subtitles_dir, mode_token=mode_token)
+    if not subtitle_file:
+        # Backward-compatible fallback for older imports without mode suffix.
+        subtitle_file = _find_subtitle_file(video_id, settings.media_dir)
     if not subtitle_file:
         subtitle_file = _find_subtitle_file(video_id, settings.subtitles_dir)
     if not subtitle_file:
@@ -121,23 +138,48 @@ def import_youtube_episode(
 ) -> ImportResult:
     settings = get_settings()
     resolved_mode = normalize_transcript_mode(transcript_mode, settings.default_transcript_mode)
+    mode_token = _mode_token(resolved_mode)
 
     def emit(stage: str, message: str, progress_pct: int) -> None:
         if progress_callback:
             progress_callback(stage, message, progress_pct)
 
+    last_download_pct = -1
+
+    def on_download_progress(data: dict) -> None:
+        nonlocal last_download_pct
+        status = str(data.get("status", ""))
+        if status == "downloading":
+            downloaded = float(data.get("downloaded_bytes") or 0.0)
+            total = float(data.get("total_bytes") or data.get("total_bytes_estimate") or 0.0)
+            if total > 0:
+                ratio = max(0.0, min(1.0, downloaded / total))
+                pct = 5 + int(ratio * 25)
+                if pct > last_download_pct:
+                    last_download_pct = pct
+                    emit("downloading", f"Downloading audio/subtitles... {int(ratio * 100)}%", pct)
+            else:
+                if last_download_pct < 8:
+                    last_download_pct = 8
+                    emit("downloading", "Downloading audio/subtitles...", 8)
+        elif status == "finished":
+            if last_download_pct < 35:
+                last_download_pct = 35
+                emit("processing_media", "Download finished. Processing media files...", 35)
+
     emit("downloading", "Downloading audio and subtitles from YouTube...", 5)
 
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": str(settings.media_dir / "%(id)s.%(ext)s"),
+        "outtmpl": str(settings.media_dir / f"%(id)s.{mode_token}.%(ext)s"),
         "writesubtitles": True,
         "writeautomaticsub": True,
         "subtitleslangs": [f"{preferred_lang}.*", preferred_lang],
         "subtitlesformat": "vtt/srt/best",
-        "noprogress": True,
+        "noprogress": False,
         "quiet": True,
         "no_warnings": True,
+        "progress_hooks": [on_download_progress],
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
     }
 
@@ -151,34 +193,55 @@ def import_youtube_episode(
     if not video_id:
         raise RuntimeError("Unable to parse YouTube video id")
 
-    existing = db.exec(select(Episode).where(Episode.youtube_video_id == video_id)).first()
+    existing = db.exec(
+        select(Episode).where(
+            Episode.youtube_video_id == video_id,
+            Episode.transcript_mode == resolved_mode,
+        )
+    ).first()
     if existing:
         sentence_count = db.exec(select(Sentence).where(Sentence.episode_id == existing.id)).all()
         return ImportResult(episode=existing, sentence_count=len(sentence_count))
 
-    audio_file = _find_audio_file(video_id, settings.media_dir)
+    audio_file = _find_audio_file(video_id, settings.media_dir, mode_token=mode_token)
+    if not audio_file:
+        # Backward-compatible fallback for older import filenames without mode suffix.
+        audio_file = _find_audio_file(video_id, settings.media_dir)
     if not audio_file:
         raise RuntimeError("Audio file not found after yt-dlp import")
-    subtitle_file = _resolve_subtitle_file(video_id)
+    subtitle_file = _resolve_subtitle_file(video_id, mode_token)
 
     if resolved_mode == TRANSCRIPT_MODE_STRICT_WHISPER:
         emit("transcribing", "Transcribing full audio with local Whisper...", 55)
+        cues = transcribe_audio_to_sentence_cues(
+            audio_path=audio_file,
+            language=preferred_lang,
+            progress_callback=lambda pct, msg: emit("transcribing", msg, pct),
+        )
+        if not cues:
+            raise RuntimeError("Strict transcript mode produced no sentence cues.")
     elif resolved_mode == TRANSCRIPT_MODE_YOUTUBE_INCREMENTAL:
         emit("segmenting", "Building sentence cues with incremental subtitle parser...", 60)
+        cues = _resolve_sentence_cues(
+            transcript_mode=resolved_mode,
+            preferred_lang=preferred_lang,
+            audio_file=audio_file,
+            subtitle_file=subtitle_file,
+        )
     else:
         emit("segmenting", "Building sentence cues with basic subtitle parser...", 60)
-
-    cues = _resolve_sentence_cues(
-        transcript_mode=resolved_mode,
-        preferred_lang=preferred_lang,
-        audio_file=audio_file,
-        subtitle_file=subtitle_file,
-    )
+        cues = _resolve_sentence_cues(
+            transcript_mode=resolved_mode,
+            preferred_lang=preferred_lang,
+            audio_file=audio_file,
+            subtitle_file=subtitle_file,
+        )
 
     emit("saving", "Saving episode and sentence cues...", 88)
 
     episode = Episode(
         youtube_video_id=video_id,
+        transcript_mode=resolved_mode,
         title=title,
         source_url=url,
         audio_path=str(audio_file),

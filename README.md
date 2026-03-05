@@ -32,12 +32,13 @@ Local AI English shadowing coach (CLI + Web UI) for YouTube podcasts.
 - Episode audio and subtitles are stored in `data/media` and `data/subtitles`.
 - Uploaded speaking audio is transcribed and deleted immediately by default.
 - Local Whisper model files are cached under `data/models/whisper`.
+- Practice page includes a clickable transcript list; clicking a line plays that exact audio span.
 - First local Whisper transcription will download model weights (one-time).
 - `.env` is loaded automatically by `pydantic-settings`.
 - Set `DISABLE_DOTENV=1` to ignore `.env` and use only process env vars.
 - Transcript modes:
   - `strict_whisper`: transcribe full audio with local Whisper (best alignment, slower import).
-  - `youtube_incremental`: rolling-caption incremental parser with dedupe and sentence emission.
+  - `youtube_incremental`: rolling-caption incremental parser with dedupe + sentence-first merge-short chunking.
   - `youtube_default`: basic subtitle cue parser (legacy baseline).
 - Optional cloud STT fallback:
   - `STT_PROVIDER=openai_whisper`

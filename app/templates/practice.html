@@ -12,7 +12,7 @@
       <p><a href="/">Back</a></p>
 
       <section class="card">
-        <h2>#{{ episode.id }} {{ episode.title }}</h2>
+        <h2>#{{ episode.id }} {{ episode.title }} [{{ episode.transcript_mode }}]</h2>
         <audio id="player" controls src="{{ audio_url }}"></audio>
       </section>
 
@@ -80,6 +80,12 @@
           <p><strong>Tip:</strong> <span id="fb-tip">-</span></p>
         </div>
       </section>
+
+      <section class="card">
+        <h3>Transcript</h3>
+        <p>Click any line to jump and play that exact part.</p>
+        <div id="transcript-list" class="transcript-list"></div>
+      </section>
     </main>
 
     <script>
@@ -97,10 +103,13 @@
       let mode = 'loading';
       let isAutoPausing = false;
       let latestAttemptAudioUrl = null;
+      let transcriptSentences = [];
+      const transcriptByIdx = new Map();
 
       const idxEl = document.getElementById('idx');
       const stateEl = document.getElementById('state-text');
       const textEl = document.getElementById('sentence-text');
+      const transcriptListEl = document.getElementById('transcript-list');
       const feedbackStatusEl = document.getElementById('feedback-status');
       const feedbackDetailsEl = document.getElementById('feedback-details');
       const fbTargetEl = document.getElementById('fb-target');
@@ -193,15 +202,16 @@
         const isRecording = mode === 'recording';
         const canSubmit = mode === 'shadow_ready' && Boolean(recordedBlob);
         const isCompleted = mode === 'completed';
+        const canSkip = mode === 'ready_to_listen' || mode === 'shadow_ready' || mode === 'listening';
 
         playBtn.disabled = !isPlayable;
         recordBtn.disabled = !canRecord;
         stopBtn.disabled = !isRecording;
         submitBtn.disabled = !canSubmit;
-        skipBtn.disabled = isCompleted || mode === 'submitting';
+        skipBtn.disabled = !canSkip || isCompleted || mode === 'submitting';
 
         if (mode === 'loading') stateEl.textContent = 'Loading sentence...';
-        if (mode === 'ready_to_listen') stateEl.textContent = 'Click Play Sentence to listen.';
+        if (mode === 'ready_to_listen') stateEl.textContent = 'Click Play Sentence or click a transcript line.';
         if (mode === 'listening') stateEl.textContent = 'Listening... audio will pause at sentence end.';
         if (mode === 'shadow_ready') stateEl.textContent = 'Your turn: shadow repeat, then submit.';
         if (mode === 'recording') stateEl.textContent = 'Recording... click Stop when finished.';
@@ -226,22 +236,83 @@
         currentIdx = data.current_idx;
       }
 
-      async function loadSentence(idx) {
-        const res = await fetch(`/api/episodes/${episodeId}/sentences/${idx}/prompt`);
+      function getSentenceByIdx(idx) {
+        return transcriptByIdx.get(idx) || null;
+      }
+
+      function highlightTranscriptLine(idx) {
+        const nodes = transcriptListEl.querySelectorAll('.transcript-line');
+        for (const node of nodes) {
+          const rowIdx = Number(node.dataset.idx);
+          node.classList.toggle('active', rowIdx === idx);
+          if (rowIdx === idx) {
+            node.scrollIntoView({ block: 'nearest' });
+          }
+        }
+      }
+
+      function renderTranscriptList() {
+        transcriptListEl.innerHTML = '';
+        if (!transcriptSentences.length) {
+          const empty = document.createElement('p');
+          empty.textContent = 'No transcript lines found.';
+          transcriptListEl.appendChild(empty);
+          return;
+        }
+
+        for (const sentence of transcriptSentences) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'transcript-line';
+          button.dataset.idx = String(sentence.idx);
+          button.innerHTML =
+            `<span class="transcript-line-index">${sentence.idx + 1}.</span>` +
+            `<span class="transcript-line-text">${sentence.text}</span>`;
+          button.addEventListener('click', async () => {
+            if (mode === 'submitting' || mode === 'recording') return;
+            const selected = await selectSentenceByIdx(sentence.idx, true);
+            if (selected) await playSentence();
+          });
+          transcriptListEl.appendChild(button);
+        }
+      }
+
+      async function loadTranscriptSentences() {
+        const res = await fetch(`/api/episodes/${episodeId}/sentences`);
         if (!res.ok) {
-          textEl.textContent = 'Session completed or sentence not found.';
+          textEl.textContent = 'Unable to load transcript lines.';
           setMode('completed');
           return false;
         }
-        const data = await res.json();
-        currentSentenceId = data.id;
-        currentIdx = data.idx;
-        currentStartMs = data.start_ms;
-        currentEndMs = data.end_ms;
+        transcriptSentences = await res.json();
+        transcriptByIdx.clear();
+        for (const sentence of transcriptSentences) {
+          transcriptByIdx.set(sentence.idx, sentence);
+        }
+        renderTranscriptList();
+        return transcriptSentences.length > 0;
+      }
+
+      async function selectSentenceByIdx(idx, resetFeedback = true) {
+        const sentence = getSentenceByIdx(idx);
+        if (!sentence) {
+          textEl.textContent = 'Sentence not found.';
+          setMode('completed');
+          return false;
+        }
+
+        currentSentenceId = sentence.id;
+        currentIdx = sentence.idx;
+        currentStartMs = sentence.start_ms;
+        currentEndMs = sentence.end_ms;
         recordedBlob = null;
         idxEl.textContent = String(currentIdx);
         clearAttemptAudio();
+        if (resetFeedback) {
+          resetFeedbackView('Ready for this line.');
+        }
         setMode('ready_to_listen');
+        highlightTranscriptLine(currentIdx);
         return true;
       }
 
@@ -365,7 +436,7 @@
           setMode('completed');
           return;
         }
-        const loaded = await loadSentence(data.next_idx);
+        const loaded = await selectSentenceByIdx(data.next_idx, false);
         if (loaded) {
           await playSentence();
         }
@@ -385,8 +456,10 @@
       (async () => {
         setMode('loading');
         resetFeedbackView('Preparing session...');
+        const loadedTranscript = await loadTranscriptSentences();
+        if (!loadedTranscript) return;
         await startSession();
-        const loaded = await loadSentence(currentIdx);
+        const loaded = await selectSentenceByIdx(currentIdx, false);
         if (loaded) {
           await playSentence();
         }

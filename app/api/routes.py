@@ -194,6 +194,24 @@ def get_sentence(episode_id: int, idx: int, db: Session = Depends(get_session)):
     )
 
 
+@router.get("/episodes/{episode_id}/sentences", response_model=list[SentenceResponse])
+def list_episode_sentences(episode_id: int, db: Session = Depends(get_session)):
+    rows = db.exec(
+        select(Sentence).where(Sentence.episode_id == episode_id).order_by(Sentence.idx)
+    ).all()
+    return [
+        SentenceResponse(
+            id=row.id,
+            episode_id=row.episode_id,
+            idx=row.idx,
+            text=row.text,
+            start_ms=row.start_ms,
+            end_ms=row.end_ms,
+        )
+        for row in rows
+    ]
+
+
 @router.get("/episodes/{episode_id}/sentences/{idx}/prompt", response_model=SentencePromptResponse)
 def get_sentence_prompt(episode_id: int, idx: int, db: Session = Depends(get_session)):
     sentence = db.exec(

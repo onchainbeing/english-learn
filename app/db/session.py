@@ -37,9 +37,32 @@ def _ensure_importjob_progress_columns() -> None:
             )
 
 
+def _ensure_episode_transcript_mode_column() -> None:
+    if not settings.db_url.startswith("sqlite"):
+        return
+
+    with engine.begin() as conn:
+        table_exists = conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='episode'"
+        ).first()
+        if not table_exists:
+            return
+
+        columns = {
+            row[1]
+            for row in conn.exec_driver_sql("PRAGMA table_info('episode')").fetchall()
+        }
+
+        if "transcript_mode" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE episode ADD COLUMN transcript_mode TEXT NOT NULL DEFAULT 'strict_whisper'"
+            )
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _ensure_importjob_progress_columns()
+    _ensure_episode_transcript_mode_column()
 
 
 def get_session():

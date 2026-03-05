@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 import re
 
@@ -12,6 +13,7 @@ from app.services.subtitle_parser import Cue, clean_text, finalize_practice_cues
 SENTENCE_RE = re.compile(r".+?(?:[.!?]+(?=\s+(?:[\"'(\[]?[A-Z0-9])|$)|$)")
 WORD_RE = re.compile(r"[A-Za-z0-9']+")
 ABBREV_END_RE = re.compile(r"\b[A-Z]\.$")
+SENTENCE_WORD_END_RE = re.compile(r"[.!?]+[\"')\]]*$")
 CONNECTOR_STARTS = {
     "and",
     "or",
@@ -119,7 +121,81 @@ def _split_segment_to_sentences(start_ms: int, end_ms: int, text: str) -> list[C
     return cues
 
 
-def transcribe_audio_to_sentence_cues(audio_path: Path, language: str = "en") -> list[Cue]:
+def _word_start_ms(word: object, fallback_ms: int) -> int:
+    value = getattr(word, "start", None)
+    if value is None:
+        return fallback_ms
+    return int(float(value) * 1000)
+
+
+def _word_end_ms(word: object, fallback_ms: int) -> int:
+    value = getattr(word, "end", None)
+    if value is None:
+        return fallback_ms
+    return int(float(value) * 1000)
+
+
+def _cue_from_word_group(words: list[object], seg_start_ms: int, seg_end_ms: int) -> Cue | None:
+    if not words:
+        return None
+
+    text = clean_text("".join(str(getattr(word, "word", "") or "") for word in words))
+    if len(WORD_RE.findall(text)) < 1:
+        return None
+
+    start_ms = seg_start_ms
+    for word in words:
+        if getattr(word, "start", None) is not None:
+            start_ms = _word_start_ms(word, seg_start_ms)
+            break
+
+    end_ms = seg_end_ms
+    for word in reversed(words):
+        if getattr(word, "end", None) is not None:
+            end_ms = _word_end_ms(word, seg_end_ms)
+            break
+
+    if end_ms <= start_ms:
+        end_ms = start_ms + 250
+
+    return Cue(start_ms=start_ms, end_ms=end_ms, text=text)
+
+
+def _split_segment_with_word_timestamps(
+    seg_start_ms: int,
+    seg_end_ms: int,
+    words: list[object],
+) -> list[Cue]:
+    if not words:
+        return []
+
+    chunks: list[Cue] = []
+    bucket: list[object] = []
+
+    for word in words:
+        raw = str(getattr(word, "word", "") or "")
+        if not raw.strip():
+            continue
+        bucket.append(word)
+        if SENTENCE_WORD_END_RE.search(raw.strip()):
+            cue = _cue_from_word_group(bucket, seg_start_ms, seg_end_ms)
+            if cue:
+                chunks.append(cue)
+            bucket = []
+
+    if bucket:
+        cue = _cue_from_word_group(bucket, seg_start_ms, seg_end_ms)
+        if cue:
+            chunks.append(cue)
+
+    return chunks
+
+
+def transcribe_audio_to_sentence_cues(
+    audio_path: Path,
+    language: str = "en",
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> list[Cue]:
     settings = get_settings()
     model = _get_local_whisper_model(
         model_size=settings.local_whisper_model,
@@ -128,20 +204,36 @@ def transcribe_audio_to_sentence_cues(audio_path: Path, language: str = "en") ->
         model_root=settings.models_dir / "whisper",
     )
 
-    segments, _ = model.transcribe(
+    segments, info = model.transcribe(
         str(audio_path),
         beam_size=settings.local_whisper_beam_size,
         language=language or settings.local_whisper_language,
         vad_filter=True,
+        word_timestamps=True,
     )
 
     cues: list[Cue] = []
+    last_reported_pct = -1
     for seg in segments:
         text = clean_text(seg.text or "")
         if not text:
             continue
         start_ms = int(float(seg.start) * 1000)
         end_ms = int(float(seg.end) * 1000)
-        cues.extend(_split_segment_to_sentences(start_ms, end_ms, text))
+        word_cues = _split_segment_with_word_timestamps(start_ms, end_ms, list(seg.words or []))
+        if word_cues:
+            cues.extend(word_cues)
+        else:
+            cues.extend(_split_segment_to_sentences(start_ms, end_ms, text))
 
-    return finalize_practice_cues(_sweep_fragment_cues(cues))
+        if progress_callback:
+            seg_end_s = float(seg.end or 0.0)
+            total_s = max(1.0, float(getattr(info, "duration", 0.0) or 0.0))
+            ratio = max(0.0, min(1.0, seg_end_s / total_s))
+            # 55-86 is reserved for strict whisper transcribing progress.
+            transcribe_pct = 55 + int(ratio * 31)
+            if transcribe_pct > last_reported_pct:
+                last_reported_pct = transcribe_pct
+                progress_callback(transcribe_pct, f"Transcribing audio... {int(ratio * 100)}%")
+
+    return finalize_practice_cues(_sweep_fragment_cues(cues), split_overlong=False)

@@ -35,7 +35,7 @@
         <ul>
           {% for e in episodes %}
           <li>
-            <a href="/practice/{{ e.id }}">#{{ e.id }} {{ e.title }}</a>
+            <a href="/practice/{{ e.id }}">#{{ e.id }} {{ e.title }} [{{ e.transcript_mode }}]</a>
           </li>
           {% endfor %}
         </ul>
@@ -63,24 +63,30 @@
       }
 
       async function pollJob(jobId) {
-        for (let i = 0; i < 180; i++) {
-          const res = await fetch(`/api/import-jobs/${jobId}`);
-          const data = await res.json();
-          const stage = data.stage || 'working';
-          const pct = Number.isFinite(data.progress_pct) ? data.progress_pct : 0;
-          const detail = data.stage_message ? ` - ${data.stage_message}` : '';
-          renderStatus(`Job ${jobId}: ${data.status} (${pct}%) [${stage}]${detail}`);
-          if (data.ready_to_shadow) {
-            renderStatus(
-              `Completed. Episode ID: ${data.episode_id}. You can start shadowing now.`,
-              data.episode_id
-            );
-            setTimeout(() => window.location.reload(), 1200);
-            return;
-          }
-          if (data.status === 'failed') {
-            renderStatus(`Failed: ${data.error_message}`);
-            return;
+        const startedAt = Date.now();
+        for (;;) {
+          try {
+            const res = await fetch(`/api/import-jobs/${jobId}`);
+            const data = await res.json();
+            const stage = data.stage || 'working';
+            const pct = Number.isFinite(data.progress_pct) ? data.progress_pct : 0;
+            const detail = data.stage_message ? ` - ${data.stage_message}` : '';
+            const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+            renderStatus(`Job ${jobId}: ${data.status} (${pct}%) [${stage}]${detail} (${elapsedSec}s elapsed)`);
+            if (data.ready_to_shadow) {
+              renderStatus(
+                `Completed. Episode ID: ${data.episode_id}. You can start shadowing now.`,
+                data.episode_id
+              );
+              setTimeout(() => window.location.reload(), 1200);
+              return;
+            }
+            if (data.status === 'failed') {
+              renderStatus(`Failed: ${data.error_message}`);
+              return;
+            }
+          } catch (err) {
+            renderStatus(`Polling error: ${String(err)}. Retrying...`);
           }
           await new Promise((r) => setTimeout(r, 1500));
         }

@@ -12,10 +12,13 @@ TAG_RE = re.compile(r"<[^>]+>")
 SENTENCE_RE = re.compile(r"[^.!?]+[.!?]+")
 CLAUSE_RE = re.compile(r"[^,;:]+[,;:]?")
 MIN_CUE_MS = 120
-MAX_SENTENCE_WORDS = 20
-MAX_SENTENCE_DURATION_MS = 9000
-MIN_PRACTICE_WORDS = 3
-MIN_PRACTICE_DURATION_MS = 500
+MAX_SENTENCE_WORDS = 36
+MAX_SENTENCE_DURATION_MS = 18000
+SHORT_SENTENCE_WORDS = 7
+SHORT_SENTENCE_DURATION_MS = 1600
+MAX_SHORT_MERGE_GAP_MS = 1400
+MAX_SHORT_MERGED_WORDS = 42
+MAX_SHORT_MERGED_DURATION_MS = 22000
 
 
 @dataclass
@@ -174,26 +177,58 @@ def _word_count(text: str) -> int:
     return len(re.findall(r"[A-Za-z0-9']+", text))
 
 
-def _is_tiny_practice_cue(cue: Cue) -> bool:
+def _is_short_practice_cue(cue: Cue) -> bool:
     duration_ms = cue.end_ms - cue.start_ms
-    return _word_count(cue.text) < MIN_PRACTICE_WORDS or duration_ms < MIN_PRACTICE_DURATION_MS
+    return _word_count(cue.text) <= SHORT_SENTENCE_WORDS or duration_ms <= SHORT_SENTENCE_DURATION_MS
 
 
-def _merge_tiny_cues(cues: list[Cue]) -> list[Cue]:
+def _can_merge_short_pair(left: Cue, right: Cue) -> bool:
+    if right.start_ms < left.start_ms:
+        return False
+    gap_ms = max(0, right.start_ms - left.end_ms)
+    if gap_ms > MAX_SHORT_MERGE_GAP_MS:
+        return False
+
+    merged_words = _word_count(left.text) + _word_count(right.text)
+    merged_duration = max(right.end_ms, left.end_ms) - min(left.start_ms, right.start_ms)
+    return merged_words <= MAX_SHORT_MERGED_WORDS and merged_duration <= MAX_SHORT_MERGED_DURATION_MS
+
+
+def _merge_short_cues(cues: list[Cue]) -> list[Cue]:
     if not cues:
         return cues
 
     merged: list[Cue] = []
-    for cue in cues:
+    i = 0
+    while i < len(cues):
+        cue = cues[i]
         current = Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text.strip())
-        if _is_tiny_practice_cue(current) and merged:
+        if (
+            i + 1 < len(cues)
+            and _is_short_practice_cue(current)
+            and _can_merge_short_pair(current, cues[i + 1])
+        ):
+            nxt = cues[i + 1]
+            merged.append(
+                Cue(
+                    start_ms=min(current.start_ms, nxt.start_ms),
+                    end_ms=max(current.end_ms, nxt.end_ms),
+                    text=f"{current.text} {nxt.text}".strip(),
+                )
+            )
+            i += 2
+            continue
+        if _is_short_practice_cue(current) and merged and _can_merge_short_pair(merged[-1], current):
             prev = merged[-1]
             prev.text = f"{prev.text} {current.text}".strip()
             prev.end_ms = max(prev.end_ms, current.end_ms)
+            i += 1
             continue
-        merged.append(current)
 
-    while len(merged) >= 2 and _is_tiny_practice_cue(merged[0]):
+        merged.append(current)
+        i += 1
+
+    while len(merged) >= 2 and _is_short_practice_cue(merged[0]) and _can_merge_short_pair(merged[0], merged[1]):
         first = merged.pop(0)
         merged[0].text = f"{first.text} {merged[0].text}".strip()
         merged[0].start_ms = min(first.start_ms, merged[0].start_ms)
@@ -201,14 +236,17 @@ def _merge_tiny_cues(cues: list[Cue]) -> list[Cue]:
     return merged
 
 
-def finalize_practice_cues(cues: list[Cue]) -> list[Cue]:
+def finalize_practice_cues(cues: list[Cue], *, split_overlong: bool = True) -> list[Cue]:
     if not cues:
         return []
 
-    split_cues: list[Cue] = []
-    for cue in cues:
-        split_cues.extend(_split_overlong_cue(cue))
-    split_cues = _merge_tiny_cues(split_cues)
+    if split_overlong:
+        split_cues: list[Cue] = []
+        for cue in cues:
+            split_cues.extend(_split_overlong_cue(cue))
+    else:
+        split_cues = [Cue(start_ms=cue.start_ms, end_ms=cue.end_ms, text=cue.text) for cue in cues]
+    split_cues = _merge_short_cues(split_cues)
 
     for idx, cue in enumerate(split_cues):
         if idx > 0 and cue.start_ms < split_cues[idx - 1].start_ms:
@@ -319,6 +357,14 @@ def parse_subtitle_file_incremental(path: Path) -> list[Cue]:
                 buffer_start_ms = fragment.start_ms
             else:
                 buffer_start_ms = None
+
+    # Flush the final sentence tail when punctuation never arrived in trailing captions.
+    tail = clean_text(buffer_text)
+    tail_words = re.findall(r"[A-Za-z0-9']+", tail)
+    if tail_words:
+        start_ms = buffer_start_ms if buffer_start_ms is not None else raw_cues[-1].start_ms
+        end_ms = max(start_ms + 250, raw_cues[-1].end_ms)
+        normalized_sentences.append(Cue(start_ms=start_ms, end_ms=end_ms, text=tail))
 
     if normalized_sentences:
         return finalize_practice_cues(normalized_sentences)
