@@ -1,0 +1,2 @@
+[console_scripts]
+coach = app.cli:app

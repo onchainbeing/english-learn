@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Practice - eng-learn</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Practice</h1>
+      <p><a href="/">Back</a></p>
+
+      <section class="card">
+        <h2>#{{ episode.id }} {{ episode.title }}</h2>
+        <audio id="player" controls src="{{ audio_url }}"></audio>
+      </section>
+
+      <section class="card">
+        <h3>Sentence <span id="idx">0</span></h3>
+        <p id="state-text">Preparing session...</p>
+        <p id="sentence-text">Loading...</p>
+        <div class="row">
+          <button id="play-btn">Play Sentence</button>
+          <button id="record-btn" disabled>Start Recording</button>
+          <button id="stop-btn" disabled>Stop</button>
+          <button id="submit-btn" disabled>Submit Attempt</button>
+          <button id="skip-btn">Skip</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Feedback</h3>
+        <pre id="feedback">No attempt yet.</pre>
+      </section>
+    </main>
+
+    <script>
+      const episodeId = {{ episode.id }};
+      let sessionId = null;
+      let currentIdx = 0;
+      let currentSentenceId = null;
+      let currentStartMs = 0;
+      let currentEndMs = 0;
+      let lastScore = 1.0;
+      let mediaRecorder = null;
+      let chunks = [];
+      let recordedBlob = null;
+      let mode = 'loading';
+      let isAutoPausing = false;
+
+      const idxEl = document.getElementById('idx');
+      const stateEl = document.getElementById('state-text');
+      const textEl = document.getElementById('sentence-text');
+      const feedbackEl = document.getElementById('feedback');
+      const player = document.getElementById('player');
+      const playBtn = document.getElementById('play-btn');
+      const recordBtn = document.getElementById('record-btn');
+      const stopBtn = document.getElementById('stop-btn');
+      const submitBtn = document.getElementById('submit-btn');
+      const skipBtn = document.getElementById('skip-btn');
+
+      function setMode(nextMode) {
+        mode = nextMode;
+        const isPlayable = mode === 'ready_to_listen' || mode === 'shadow_ready';
+        const canRecord = mode === 'shadow_ready';
+        const isRecording = mode === 'recording';
+        const canSubmit = mode === 'shadow_ready' && Boolean(recordedBlob);
+        const isCompleted = mode === 'completed';
+
+        playBtn.disabled = !isPlayable;
+        recordBtn.disabled = !canRecord;
+        stopBtn.disabled = !isRecording;
+        submitBtn.disabled = !canSubmit;
+        skipBtn.disabled = isCompleted || mode === 'submitting';
+
+        if (mode === 'loading') stateEl.textContent = 'Loading sentence...';
+        if (mode === 'ready_to_listen') stateEl.textContent = 'Click Play Sentence to listen.';
+        if (mode === 'listening') stateEl.textContent = 'Listening... audio will pause at sentence end.';
+        if (mode === 'shadow_ready') stateEl.textContent = 'Your turn: shadow repeat, then submit.';
+        if (mode === 'recording') stateEl.textContent = 'Recording... click Stop when finished.';
+        if (mode === 'submitting') stateEl.textContent = 'Evaluating your speech...';
+        if (mode === 'completed') stateEl.textContent = 'Session completed.';
+      }
+
+      async function startSession() {
+        const res = await fetch('/api/sessions/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ episode_id: episodeId }),
+        });
+        const data = await res.json();
+        sessionId = data.session_id;
+        currentIdx = data.current_idx;
+      }
+
+      async function loadSentence(idx) {
+        const res = await fetch(`/api/episodes/${episodeId}/sentences/${idx}`);
+        if (!res.ok) {
+          textEl.textContent = 'Session completed or sentence not found.';
+          setMode('completed');
+          return false;
+        }
+        const data = await res.json();
+        currentSentenceId = data.id;
+        currentIdx = data.idx;
+        currentStartMs = data.start_ms;
+        currentEndMs = data.end_ms;
+        recordedBlob = null;
+        idxEl.textContent = String(currentIdx);
+        textEl.textContent = data.text;
+        setMode('ready_to_listen');
+        return true;
+      }
+
+      function sentenceStartSec() {
+        return Math.max(0, currentStartMs / 1000);
+      }
+
+      function sentenceEndSec() {
+        const start = sentenceStartSec();
+        const end = Math.max(start + 0.2, currentEndMs / 1000);
+        return end;
+      }
+
+      async function playSentence() {
+        if (mode === 'completed' || !currentSentenceId) return;
+        try {
+          player.currentTime = sentenceStartSec();
+          setMode('listening');
+          await player.play();
+        } catch (err) {
+          feedbackEl.textContent = `Playback error: ${String(err)}`;
+          setMode('ready_to_listen');
+        }
+      }
+
+      async function setupRecorder() {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+        mediaRecorder.onstop = () => {
+          recordedBlob = new Blob(chunks, { type: 'audio/webm' });
+          chunks = [];
+          setMode('shadow_ready');
+        };
+      }
+
+      player.addEventListener('timeupdate', () => {
+        if (mode !== 'listening' || isAutoPausing) return;
+        if (player.currentTime >= sentenceEndSec()) {
+          isAutoPausing = true;
+          player.pause();
+          player.currentTime = sentenceEndSec();
+          isAutoPausing = false;
+          setMode('shadow_ready');
+        }
+      });
+
+      player.addEventListener('play', () => {
+        if (mode !== 'completed' && mode !== 'submitting' && mode !== 'recording') {
+          setMode('listening');
+        }
+      });
+
+      playBtn.addEventListener('click', async () => {
+        await playSentence();
+      });
+
+      recordBtn.addEventListener('click', async () => {
+        if (mode !== 'shadow_ready') return;
+        if (!mediaRecorder) await setupRecorder();
+        if (!player.paused) {
+          player.pause();
+        }
+        chunks = [];
+        recordedBlob = null;
+        mediaRecorder.start();
+        setMode('recording');
+      });
+
+      stopBtn.addEventListener('click', () => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+      });
+
+      submitBtn.addEventListener('click', async () => {
+        if (!recordedBlob) return;
+        setMode('submitting');
+        feedbackEl.textContent = 'Transcribing and scoring...';
+
+        const form = new FormData();
+        form.append('sentence_id', String(currentSentenceId));
+        form.append('session_id', String(sessionId));
+        form.append('audio_file', recordedBlob, `attempt-${Date.now()}.webm`);
+
+        const res = await fetch('/api/attempts', { method: 'POST', body: form });
+        const data = await res.json();
+
+        if (!res.ok) {
+          feedbackEl.textContent = JSON.stringify(data, null, 2);
+          setMode('shadow_ready');
+          return;
+        }
+
+        lastScore = data.score_total;
+        feedbackEl.textContent = JSON.stringify(data, null, 2);
+        recordedBlob = null;
+        await goNextByScore(lastScore);
+      });
+
+      async function goNextByScore(score) {
+        const res = await fetch(`/api/sessions/${sessionId}/next`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sentence_idx: currentIdx, score_total: score }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          feedbackEl.textContent = JSON.stringify(data, null, 2);
+          setMode('shadow_ready');
+          return;
+        }
+        if (data.next_idx === null) {
+          textEl.textContent = 'Practice session completed.';
+          setMode('completed');
+          return;
+        }
+        const loaded = await loadSentence(data.next_idx);
+        if (loaded) {
+          await playSentence();
+        }
+      }
+
+      skipBtn.addEventListener('click', async () => {
+        if (mode === 'completed' || mode === 'submitting') return;
+        feedbackEl.textContent = 'Skipped. Moving to next sentence...';
+        await goNextByScore(0.85);
+      });
+
+      (async () => {
+        setMode('loading');
+        await startSession();
+        const loaded = await loadSentence(currentIdx);
+        if (loaded) {
+          await playSentence();
+        }
+      })();
+    </script>
+  </body>
+</html>

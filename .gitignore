@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# runtime data
+/data/media/*
+/data/subtitles/*
+/data/backups/*
+/data/attempt_audio/*
+/data/models/*
+/data/eng_learn.db
+
+# keep directories
+!/data/media/.gitkeep
+!/data/subtitles/.gitkeep
+!/data/backups/.gitkeep

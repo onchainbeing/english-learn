@@ -1,0 +1,61 @@
+Metadata-Version: 2.4
+Name: eng-learn
+Version: 0.1.0
+Summary: Local AI English shadowing coach
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: jinja2>=3.1.4
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: sqlmodel>=0.0.22
+Requires-Dist: alembic>=1.13.0
+Requires-Dist: typer>=0.12.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: jiwer>=3.0.4
+Requires-Dist: rapidfuzz>=3.9.0
+Requires-Dist: openai>=1.45.0
+Requires-Dist: yt-dlp>=2025.1.0
+Requires-Dist: faster-whisper>=1.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: httpx>=0.28.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
+
+# eng-learn
+
+Local AI English shadowing coach (CLI + Web UI) for YouTube podcasts.
+
+## MVP defaults
+- STT: Local Whisper (`faster-whisper`) on your device
+- Feedback: Cloud LLM (DeepSeek via OpenAI-compatible API)
+- Subtitles: `en` + `auto-en` fallback from `yt-dlp`
+- Storage: SQLite + local episode media/subtitles, no long-term mic audio storage
+
+## Quickstart
+1. Install dependencies:
+   - `uv sync` (or `pip install -e .[dev]`)
+2. Create local config:
+   - `cp .env.example .env`
+   - Edit `.env` with your keys/options.
+3. Run API:
+   - `uv run uvicorn app.main:app --reload`
+4. Run CLI:
+   - `uv run coach --help`
+
+## Main commands
+- `coach import-youtube <url> --lang en`
+- `coach session start --episode-id <id>`
+- `coach vocab due`
+- `coach stats --days 7`
+
+## Notes
+- Episode audio and subtitles are stored in `data/media` and `data/subtitles`.
+- Uploaded speaking audio is transcribed and deleted immediately by default.
+- Local Whisper model files are cached under `data/models/whisper`.
+- `.env` is loaded automatically by `pydantic-settings`.
+- Optional cloud STT fallback:
+  - `STT_PROVIDER=openai_whisper`
+  - `OPENAI_API_KEY=...`
