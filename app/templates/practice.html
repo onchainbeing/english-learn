@@ -51,6 +51,7 @@
               </span>
               <span id="fb-score-word" class="score-value">-</span>
             </div>
+            <p id="fb-score-word-detail" class="score-explanation">-</p>
             <div class="score-line">
               <span class="score-name">
                 Timing score
@@ -62,6 +63,7 @@
               </span>
               <span id="fb-score-timing" class="score-value">-</span>
             </div>
+            <p id="fb-score-timing-detail" class="score-explanation">-</p>
             <div class="score-line">
               <span class="score-name">
                 Total score
@@ -73,6 +75,7 @@
               </span>
               <span id="fb-score-total" class="score-value">-</span>
             </div>
+            <p id="fb-score-total-detail" class="score-explanation">-</p>
           </div>
 
           <p><strong>Missed words:</strong> <span id="fb-missed">-</span></p>
@@ -103,6 +106,7 @@
       let mode = 'loading';
       let isAutoPausing = false;
       let latestAttemptAudioUrl = null;
+      let latestAttemptPlayer = null;
       let transcriptSentences = [];
       const transcriptByIdx = new Map();
 
@@ -115,8 +119,11 @@
       const fbTargetEl = document.getElementById('fb-target');
       const fbUserEl = document.getElementById('fb-user');
       const fbScoreWordEl = document.getElementById('fb-score-word');
+      const fbScoreWordDetailEl = document.getElementById('fb-score-word-detail');
       const fbScoreTimingEl = document.getElementById('fb-score-timing');
+      const fbScoreTimingDetailEl = document.getElementById('fb-score-timing-detail');
       const fbScoreTotalEl = document.getElementById('fb-score-total');
+      const fbScoreTotalDetailEl = document.getElementById('fb-score-total-detail');
       const fbMissedEl = document.getElementById('fb-missed');
       const fbExtraEl = document.getElementById('fb-extra');
       const fbTipEl = document.getElementById('fb-tip');
@@ -137,7 +144,15 @@
         playAttemptBtn.disabled = !latestAttemptBlob;
       }
 
+      function stopLatestAttemptPlayback() {
+        if (!latestAttemptPlayer) return;
+        latestAttemptPlayer.pause();
+        latestAttemptPlayer.currentTime = 0;
+        latestAttemptPlayer = null;
+      }
+
       function clearAttemptAudio() {
+        stopLatestAttemptPlayback();
         latestAttemptBlob = null;
         playAttemptBtn.disabled = true;
         if (latestAttemptAudioUrl) {
@@ -152,8 +167,14 @@
         fbTargetEl.textContent = '-';
         fbUserEl.textContent = '-';
         fbScoreWordEl.textContent = '-';
+        fbScoreWordEl.title = '';
+        fbScoreWordDetailEl.textContent = '-';
         fbScoreTimingEl.textContent = '-';
+        fbScoreTimingEl.title = '';
+        fbScoreTimingDetailEl.textContent = '-';
         fbScoreTotalEl.textContent = '-';
+        fbScoreTotalEl.title = '';
+        fbScoreTotalDetailEl.textContent = '-';
         fbMissedEl.textContent = '-';
         fbExtraEl.textContent = '-';
         fbTipEl.textContent = '-';
@@ -178,8 +199,14 @@
         fbTargetEl.textContent = data.reference_text || '(unavailable)';
         fbUserEl.textContent = data.user_text || '(empty)';
         fbScoreWordEl.textContent = formatScore(data.score_word);
+        fbScoreWordEl.title = data.score_word_detail || '';
+        fbScoreWordDetailEl.textContent = data.score_word_detail || 'No explanation.';
         fbScoreTimingEl.textContent = formatScore(data.score_timing);
+        fbScoreTimingEl.title = data.score_timing_detail || '';
+        fbScoreTimingDetailEl.textContent = data.score_timing_detail || 'No explanation.';
         fbScoreTotalEl.textContent = formatScore(data.score_total);
+        fbScoreTotalEl.title = data.score_total_detail || '';
+        fbScoreTotalDetailEl.textContent = data.score_total_detail || 'No explanation.';
         fbMissedEl.textContent = formatWords(data.missed_words);
         fbExtraEl.textContent = formatWords(data.extra_words);
         fbTipEl.textContent = data.tip || 'No tip.';
@@ -187,10 +214,15 @@
 
       function playLatestAttempt() {
         if (!latestAttemptBlob) return;
+        stopLatestAttemptPlayback();
         if (latestAttemptAudioUrl) URL.revokeObjectURL(latestAttemptAudioUrl);
         latestAttemptAudioUrl = URL.createObjectURL(latestAttemptBlob);
-        const audio = new Audio(latestAttemptAudioUrl);
-        audio.play().catch((err) => {
+        latestAttemptPlayer = new Audio(latestAttemptAudioUrl);
+        latestAttemptPlayer.addEventListener('ended', () => {
+          latestAttemptPlayer = null;
+        }, { once: true });
+        latestAttemptPlayer.play().catch((err) => {
+          latestAttemptPlayer = null;
           showFeedbackError(`Playback error: ${String(err)}`);
         });
       }
@@ -293,7 +325,7 @@
         return transcriptSentences.length > 0;
       }
 
-      async function selectSentenceByIdx(idx, resetFeedback = true) {
+      async function selectSentenceByIdx(idx, resetFeedback = true, preserveAttemptAudio = false) {
         const sentence = getSentenceByIdx(idx);
         if (!sentence) {
           textEl.textContent = 'Sentence not found.';
@@ -307,7 +339,9 @@
         currentEndMs = sentence.end_ms;
         recordedBlob = null;
         idxEl.textContent = String(currentIdx);
-        clearAttemptAudio();
+        if (!preserveAttemptAudio) {
+          clearAttemptAudio();
+        }
         if (resetFeedback) {
           resetFeedbackView('Ready for this line.');
         }
@@ -436,7 +470,7 @@
           setMode('completed');
           return;
         }
-        const loaded = await selectSentenceByIdx(data.next_idx, false);
+        const loaded = await selectSentenceByIdx(data.next_idx, false, true);
         if (loaded) {
           await playSentence();
         }

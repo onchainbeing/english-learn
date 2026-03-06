@@ -38,8 +38,11 @@ class AttemptResponse(BaseModel):
     missed_words: list[str]
     extra_words: list[str]
     score_word: float
+    score_word_detail: str
     score_timing: float
+    score_timing_detail: str
     score_total: float
+    score_total_detail: str
     tip: str
 
 

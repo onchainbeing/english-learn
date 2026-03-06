@@ -25,7 +25,7 @@ from app.schemas.responses import (
     SentenceResponse,
 )
 from app.services.audio_utils import get_audio_duration_seconds
-from app.services.feedback import FeedbackService
+from app.services.feedback import FeedbackService, build_score_explanations
 from app.services.practice import next_sentence_index
 from app.services.scoring import compute_score
 from app.services.stt import STTService
@@ -326,6 +326,15 @@ async def create_attempt(
             extra_words=score.extra_words,
             score_total=score.score_total,
         )
+        explanations = build_score_explanations(
+            missed_words=score.missed_words,
+            extra_words=score.extra_words,
+            score_word=score.score_word,
+            score_timing=score.score_timing,
+            score_total=score.score_total,
+            target_duration_s=target_duration_s,
+            user_duration_s=user_duration_s,
+        )
 
         db.commit()
         db.refresh(attempt)
@@ -337,8 +346,11 @@ async def create_attempt(
             missed_words=score.missed_words,
             extra_words=score.extra_words,
             score_word=attempt.score_word,
+            score_word_detail=explanations["score_word_detail"],
             score_timing=attempt.score_timing,
+            score_timing_detail=explanations["score_timing_detail"],
             score_total=attempt.score_total,
+            score_total_detail=explanations["score_total_detail"],
             tip=tip,
         )
     except RuntimeError as exc:

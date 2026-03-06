@@ -114,6 +114,14 @@ pre {
 .score-value {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
+  cursor: help;
+}
+
+.score-explanation {
+  margin: -2px 4px 6px;
+  color: #4f6d5b;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .transcript-list {

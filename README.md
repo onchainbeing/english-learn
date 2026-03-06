@@ -28,6 +28,23 @@ Local AI English shadowing coach (CLI + Web UI) for YouTube podcasts.
 - `coach vocab due`
 - `coach stats --days 7`
 
+## TDD workflow
+Use a strict red-green-refactor loop for feature work and bugfixes:
+- add one failing test for the exact behavior
+- make the smallest code change to pass it
+- run the narrowest test subset first, then the full suite
+- refactor only while tests stay green
+
+Current test layout:
+- `tests/unit`: scoring and subtitle parsing logic
+- `tests/api`: FastAPI route and page contract tests with an isolated SQLite DB
+- `tests/fixtures`: real-world subtitle regression samples
+
+Run tests with:
+- `uv run --extra dev python -m pytest tests/unit/test_subtitle_parser.py`
+- `uv run --extra dev python -m pytest tests/api/test_sentences_api.py`
+- `uv run --extra dev python -m pytest`
+
 ## Notes
 - Episode audio and subtitles are stored in `data/media` and `data/subtitles`.
 - Uploaded speaking audio is transcribed and deleted immediately by default.

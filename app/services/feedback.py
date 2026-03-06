@@ -5,6 +5,92 @@ from openai import OpenAI
 from app.core.config import get_settings
 
 
+def _score_label(score: float) -> str:
+    if score >= 0.85:
+        return "High"
+    if score >= 0.6:
+        return "Moderate"
+    return "Low"
+
+
+def _preview_words(words: list[str], limit: int = 3) -> str:
+    preview = ", ".join(words[:limit])
+    if len(words) > limit:
+        preview += ", ..."
+    return preview
+
+
+def build_score_explanations(
+    *,
+    missed_words: list[str],
+    extra_words: list[str],
+    score_word: float,
+    score_timing: float,
+    score_total: float,
+    target_duration_s: float | None,
+    user_duration_s: float | None,
+) -> dict[str, str]:
+    if not missed_words and not extra_words:
+        word_detail = (
+            f"{_score_label(score_word)} word score because your attempt matched the target words closely "
+            "with no missed or extra words detected."
+        )
+    else:
+        parts: list[str] = []
+        if missed_words:
+            parts.append(f"missed {len(missed_words)} word(s): {_preview_words(missed_words)}")
+        if extra_words:
+            parts.append(f"added {len(extra_words)} extra word(s): {_preview_words(extra_words)}")
+        word_detail = f"{_score_label(score_word)} word score because you " + " and ".join(parts) + "."
+
+    if target_duration_s and user_duration_s and target_duration_s > 0:
+        duration_gap_s = abs(user_duration_s - target_duration_s)
+        if score_timing >= 0.85:
+            timing_detail = (
+                f"{_score_label(score_timing)} timing score because your recording length stayed close to the target "
+                f"({user_duration_s:.2f}s vs {target_duration_s:.2f}s)."
+            )
+        elif score_timing >= 0.6:
+            timing_detail = (
+                f"{_score_label(score_timing)} timing score because your rhythm was somewhat close, but the duration "
+                f"still differed by {duration_gap_s:.2f}s ({user_duration_s:.2f}s vs {target_duration_s:.2f}s)."
+            )
+        else:
+            timing_detail = (
+                f"{_score_label(score_timing)} timing score because your recording length was far from the target "
+                f"by {duration_gap_s:.2f}s ({user_duration_s:.2f}s vs {target_duration_s:.2f}s)."
+            )
+    else:
+        timing_detail = "Timing score was estimated without enough duration data."
+
+    if score_word >= 0.85 and score_timing >= 0.85:
+        total_detail = (
+            f"{_score_label(score_total)} total score because both word accuracy and pacing were strong. "
+            "The total score weights word accuracy more heavily than timing."
+        )
+    elif score_word >= 0.85 and score_timing < 0.6:
+        total_detail = (
+            f"{_score_label(score_total)} total score because your words were strong, but timing pulled the total down. "
+            "The total score weights word accuracy more heavily than timing."
+        )
+    elif score_word < 0.6 and score_timing >= 0.85:
+        total_detail = (
+            f"{_score_label(score_total)} total score because your rhythm was solid, but word accuracy pulled the total down. "
+            "The total score weights word accuracy more heavily than timing."
+        )
+    else:
+        total_detail = (
+            f"{_score_label(score_total)} total score because both word accuracy and timing still need work. "
+            "The total score weights word accuracy more heavily than timing."
+        )
+
+    return {
+        "score_word_detail": word_detail,
+        "score_timing_detail": timing_detail,
+        "score_total_detail": total_detail,
+    }
+
+
 class FeedbackService:
     def __init__(self) -> None:
         self.settings = get_settings()
